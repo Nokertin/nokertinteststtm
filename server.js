@@ -2,7 +2,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const RedisStore = require('connect-redis');
+const connectRedis = require('connect-redis');
 const redis = require('redis');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const basicAuth = require('basic-auth');
@@ -29,6 +29,9 @@ const History = mongoose.model('History', HistorySchema);
 const redisClient = redis.createClient({ url: process.env.REDIS_URL });
 redisClient.connect().catch(console.error);
 
+// Исправленная строка для RedisStore
+const RedisStore = connectRedis.default || connectRedis(session);
+
 app.use(
   session({
     store: new RedisStore({ client: redisClient }),
@@ -41,7 +44,7 @@ app.use(
 
 // ---------- Middleware ----------
 app.use(express.urlencoded({ extended: true }));
-app.set('view engine', 'ejs');   // если хочешь использовать EJS
+app.set('view engine', 'ejs');
 app.set('views', __dirname + '/views');
 
 // ---------- Basic Auth (pre‑generated users) ----------
@@ -56,14 +59,13 @@ function authMiddleware(req, res, next) {
     res.set('WWW-Authenticate', 'Basic realm="proxy"');
     return res.status(401).send('Authentication required.');
   }
-  req.session.userId = user.name; // сохраняем id в сессию
+  req.session.userId = user.name;
   next();
 }
 app.use(authMiddleware);
 
 // ---------- Routes ----------
 app.get('/', (req, res) => {
-  // После логина сразу перенаправляем на UI прокси
   res.redirect('/proxy.html');
 });
 
@@ -96,11 +98,10 @@ app.get('/history', async (req, res) => {
 app.use(
   '/proxy/:encodedUrl*',
   createProxyMiddleware({
-    target: '', // placeholder, будем менять динамически
+    target: '',
     changeOrigin: true,
     secure: true,
     onProxyReq: (proxyReq, req) => {
-      // Переносим cookies сессии в заголовок Cookie
       if (req.session.cookies) {
         proxyReq.setHeader('Cookie', req.session.cookies.join('; '));
       }
@@ -108,8 +109,6 @@ app.use(
     onProxyRes: async (proxyRes, req, res) => {
       const setCookies = proxyRes.headers['set-cookie'];
       if (setCookies) req.session.cookies = setCookies;
-
-      // Сохраняем статус истории
       await History.updateOne(
         { _id: req.historyId },
         { status: proxyRes.statusCode }
@@ -121,7 +120,6 @@ app.use(
 // ---------- Динамическая генерация target ----------
 app.use('/proxy/:encodedUrl*', (req, res, next) => {
   const decoded = decodeURIComponent(req.params.encodedUrl);
-  // Сохраняем запись истории
   const hist = new History({
     userId: req.session.userId,
     url: decoded,
@@ -129,7 +127,6 @@ app.use('/proxy/:encodedUrl*', (req, res, next) => {
   });
   hist.save().then(() => (req.historyId = hist._id));
 
-  // Перенаправляем middleware прокси с нужным target
   const proxyMiddleware = createProxyMiddleware({
     target: decoded,
     changeOrigin: true,
