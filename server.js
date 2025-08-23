@@ -29,7 +29,6 @@ const History = mongoose.model('History', HistorySchema);
 const redisClient = redis.createClient({ url: process.env.REDIS_URL });
 redisClient.connect().catch(console.error);
 
-// Исправленная строка для RedisStore
 const RedisStore = connectRedis.default || connectRedis(session);
 
 app.use(
@@ -95,31 +94,10 @@ app.get('/history', async (req, res) => {
 });
 
 // ---------- Proxy endpoint ----------
-app.use(
-  '/proxy/:encodedUrl*',
-  createProxyMiddleware({
-    target: '',
-    changeOrigin: true,
-    secure: true,
-    onProxyReq: (proxyReq, req) => {
-      if (req.session.cookies) {
-        proxyReq.setHeader('Cookie', req.session.cookies.join('; '));
-      }
-    },
-    onProxyRes: async (proxyRes, req, res) => {
-      const setCookies = proxyRes.headers['set-cookie'];
-      if (setCookies) req.session.cookies = setCookies;
-      await History.updateOne(
-        { _id: req.historyId },
-        { status: proxyRes.statusCode }
-      );
-    }
-  })
-);
-
-// ---------- Динамическая генерация target ----------
 app.use('/proxy/:encodedUrl*', (req, res, next) => {
   const decoded = decodeURIComponent(req.params.encodedUrl);
+  
+  // Сохраняем запись истории
   const hist = new History({
     userId: req.session.userId,
     url: decoded,
@@ -127,6 +105,7 @@ app.use('/proxy/:encodedUrl*', (req, res, next) => {
   });
   hist.save().then(() => (req.historyId = hist._id));
 
+  // Перенаправляем middleware прокси с нужным target
   const proxyMiddleware = createProxyMiddleware({
     target: decoded,
     changeOrigin: true,
