@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<title>Мой Прокси</title>
+<style>
+  body, html{margin:0;height:100%;font-family:sans-serif}
+  #toolbar{position:absolute;top:0;width:100%;background:#f0f0f0;padding:.5rem;}
+  #url{width:70%;padding:.4rem;font-size:1rem;}
+  #go{padding:.4rem .8rem;}
+  iframe{width:100%;height:calc(100% - 2.5rem);border:none;margin-top:2.5rem;}
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <input id="url" placeholder="https://google.com"/>
+  <button id="go">Перейти</button>
+  <button id="hist" style="margin-left:1rem;">История</button>
+</div>
+<iframe id="frame"></iframe>
+
+<script>
+document.getElementById('go').onclick = () => {
+  const url = document.getElementById('url').value;
+  if (!url) return alert('Укажите URL');
+  window.location.href = `/proxy/${encodeURIComponent(url)}`;
+};
+
+document.getElementById('hist').onclick = async () => {
+  const r = await fetch('/history');
+  const data = await r.json();
+  let txt = 'История запросов:\n';
+  data.forEach(o=>txt+=`${o.timestamp} ${o.method} ${o.url} → ${o.status}\n`);
+  alert(txt);
+};
+</script>
+</body>
+</html>
