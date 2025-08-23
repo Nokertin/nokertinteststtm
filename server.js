@@ -2,7 +2,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const RedisStore = require('connect-redis')(session);
+const RedisStore = require('connect-redis');
 const redis = require('redis');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const basicAuth = require('basic-auth');
@@ -28,6 +28,7 @@ const History = mongoose.model('History', HistorySchema);
 // ---------- Redis (sessions) ----------
 const redisClient = redis.createClient({ url: process.env.REDIS_URL });
 redisClient.connect().catch(console.error);
+
 app.use(
   session({
     store: new RedisStore({ client: redisClient }),
