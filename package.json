@@ -22,6 +22,8 @@
     "bcryptjs": "^2.4.3",
     "sqlite3": "^5.1.7",
     "sqlite": "^5.1.1",
-    "cheerio": "^1.0.0-rc.12"
+    "cheerio": "^1.0.0-rc.12",
+    "morgan": "^1.10.0",
+    "helmet": "^7.1.0"
   }
 }
