@@ -1,23 +1,28 @@
 // ─────────────────────────────────────────────
-// server.js  (обновлён с Cheerio)
+// server.js  – готовый, для работы на Render (HTTPS)
 // ─────────────────────────────────────────────
 
 // ---------- Библиотеки ----------
 require('dotenv').config();
-const express      = require('express');
-const session      = require('express-session');
-const MongoStore   = require('connect-mongo');
+const express            = require('express');
+const session            = require('express-session');
+const MongoStore         = require('connect-mongo');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const basicAuth    = require('basic-auth');          // (не используется, но оставим)
-const mongoose     = require('mongoose');
-const { HttpsProxyAgent } = require('https-proxy-agent');
-const fs           = require('fs');
-const path         = require('path');
-const cheerio      = require('cheerio');
+const mongoose           = require('mongoose');
+const { HttpsProxyAgent }= require('https-proxy-agent');
+const fs                 = require('fs');
+const path               = require('path');
+const cheerio            = require('cheerio');
 
 // ---------- Инициализация ----------
 const app   = express();
 const PORT  = process.env.PORT || 3000;
+
+// ──────────────────────────────
+// Render ставит ваше приложение за reverse‑proxy,
+// поэтому нам нужно сообщить Express, что соединение HTTPS
+// ──────────────────────────────
+app.set('trust proxy', 1);          // или session({ proxy:true })
 
 // ---------- MongoDB ----------
 mongoose.connect(process.env.MONGO_URI, {
@@ -47,9 +52,11 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true,           // если вы разворачиваете под HTTPS
+      secure: true,          // Render использует HTTPS → кука будет безопасной
       sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000   // 1 день (можно убрать/изменить)
     },
+    proxy: true              // эквивалент app.set('trust proxy', 1)
   })
 );
 
@@ -134,7 +141,7 @@ app.get('/proxy.html', (req, res) => {
 app.use('/proxy/:encodedUrl*', (req, res, next) => {
   const decoded = decodeURIComponent(req.params.encodedUrl);
 
-  // Конфигурация внешнего прокси
+  // Внешний прокси‑сервер
   const externalProxyUrl = `http://xggsmdrf:se2wmii8b1qh@185.39.8.196:5853`;
   const agent = new HttpsProxyAgent(externalProxyUrl);
 
@@ -149,7 +156,7 @@ app.use('/proxy/:encodedUrl*', (req, res, next) => {
     target: decoded,
     changeOrigin: true,
     secure: false,
-    agent,                                 // добавлено
+    agent,                               // добавлено
     onProxyReq: proxyReq => {
       if (req.session.cookies) {
         proxyReq.setHeader('Cookie', req.session.cookies.join('; '));
