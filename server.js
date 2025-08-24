@@ -1,228 +1,149 @@
-import express from 'express';
-import session from 'express-session';
-import cookieParser from 'cookie-parser';
-import path from 'node:path';
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import fetch from 'node-fetch';
-import morgan from 'morgan';
-import helmet from 'helmet';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
-import * as cheerio from 'cheerio';
-import HttpsProxyAgent from 'https-proxy-agent';
+// ─────────────────────────────────────────────
+// server.js 
+// ─────────────────────────────────────────────
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+require('dotenv').config();
+
+const express      = require('express');
+const session      = require('express-session');
+const MongoStore   = require('connect-mongo');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const basicAuth    = require('basic-auth');
+const mongoose     = require('mongoose');
+const HttpsProxyAgent = require('https-proxy-agent'); // <-- Новая библиотека
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-// --- Security & utils
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(morgan('dev'));
+// ---------- MongoDB ----------
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+});
+
+const mongoClient = mongoose.connection.getClient();
+
+const HistorySchema = new mongoose.Schema({
+  userId:    String,
+  url:       String,
+  method:    String,
+  status:    Number,
+  timestamp: { type: Date, default: Date.now },
+});
+const History = mongoose.model('History', HistorySchema);
+
+// ---------- Сессии ----------
+app.use(
+  session({
+    store: MongoStore.create({
+      client: mongoClient,
+      collectionName: 'sessions',
+    }),
+    secret: process.env.SESSION_SECRET || 'very_secret_key',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+    },
+  })
+);
+
+// ---------- Middleware ----------
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-app.use(cookieParser());
-app.use(express.static(path.join(__dirname, 'public')));
 app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
+app.set('views', __dirname + '/views');
 
-// --- Пользователи для входа
+// ---------- Auth users ----------
 const USERS = {
   Biba: 'Biba1Boba',
   Boba: 'Boba1Biba',
 };
 
-// --- Config (удален users.json, теперь пользователи в коде)
-let UPSTREAMS = JSON.parse(fs.readFileSync(path.join(__dirname, 'config', 'upstreams.json'), 'utf-8'));
-UPSTREAMS.push({ id: 'direct', http: null, https: null });
-
-// --- Прокси с логином/паролем
-const PROXIES = [
-  { id: '185.39.8.196', host: '185.39.8.196', port: '5853', auth: 'xggsmdrf:se2wmii8b1qh' },
-  { id: '77.83.233.196', host: '77.83.233.196', port: '6814', auth: 'xggsmdrf:se2wmii8b1qh' },
-  { id: '216.173.78.200', host: '216.173.78.200', port: '6020', auth: 'xggsmdrf:se2wmii8b1qh' },
-  { id: '92.112.227.247', host: '92.112.227.247', port: '6419', auth: 'xggsmdrf:se2wmii8b1qh' },
-  { id: '64.137.104.248', host: '64.137.104.248', port: '5858', auth: 'xggsmdrf:se2wmii8b1qh' }
-];
-
-// --- DB
-const db = await open({ filename: path.join(__dirname, 'data.db'), driver: sqlite3.Database });
-await db.exec(`CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE NOT NULL
-)`);
-for (const username of Object.keys(USERS)) {
-  try { await db.run('INSERT INTO users(username) VALUES (?)', username); } catch {}
-}
-await db.exec(`CREATE TABLE IF NOT EXISTS settings (
-  user_id INTEGER PRIMARY KEY,
-  selected_proxy_id TEXT
-)`);
-
-// --- Session
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'lax' }
-}));
-
-// --- Auth middleware
-function requireAuth(req, res, next) {
-  if (req.session.user) return next();
-  res.redirect('/login');
+// Middleware для проверки аутентификации
+function isAuthenticated(req, res, next) {
+  if (req.session.userId) {
+    next();
+  } else {
+    res.redirect('/login');
+  }
 }
 
-// --- Routes
-app.get('/login', (req, res) => res.render('login', { error: null }));
+// ---------- Routes ----------
+app.get('/', (req, res) => res.redirect('/login'));
 
-app.post('/login', async (req, res) => {
+app.get('/login', (req, res) =>
+  res.sendFile(__dirname + '/views/login.html')
+);
+
+app.post('/login', (req, res) => {
   const { user, pass } = req.body;
   if (USERS[user] && USERS[user] === pass) {
-    const row = await db.get('SELECT id FROM users WHERE username = ?', user);
-    req.session.user = { id: row.id, username: user };
-    return res.redirect('/');
+    req.session.userId = user;
+    return res.redirect('/proxy.html');
   }
-  res.status(401).render('login', { error: 'Неверные данные' });
+  res.status(401).send('Invalid credentials.');
 });
 
-app.post('/logout', (req, res) => {
-  req.session.destroy(() => res.redirect('/login'));
+app.use(isAuthenticated);
+
+app.get('/proxy.html', (req, res) =>
+  res.sendFile(__dirname + '/views/proxy.html')
+);
+
+// ---------- History API ----------
+app.get('/history', async (req, res) => {
+  const records = await History.find({ userId: req.session.userId })
+    .sort({ timestamp: -1 })
+    .limit(50);
+  res.json(records);
 });
 
-app.get('/', requireAuth, async (req, res) => {
-  const proxies = UPSTREAMS;
-  const setting = await db.get('SELECT selected_proxy_id FROM settings WHERE user_id = ?', req.session.user.id);
-  res.render('home', { user: req.session.user, proxies, selected: setting?.selected_proxy_id || null });
-});
+// ---------- Proxy endpoint ----------
+app.use('/proxy/:encodedUrl*', (req, res, next) => {
+  const decoded = decodeURIComponent(req.params.encodedUrl);
 
-app.post('/select-proxy', requireAuth, async (req, res) => {
-  const { proxyId } = req.body;
-  const exists = PROXIES.find(p => p.id === proxyId) || { id: 'direct' };
-  await db.run(
-    'INSERT INTO settings(user_id, selected_proxy_id) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET selected_proxy_id=excluded.selected_proxy_id',
-    req.session.user.id, exists.id
-  );
-  res.redirect('/browser?start=https://duckduckgo.com/');
-});
+  // --- КОНФИГУРАЦИЯ ВНЕШНЕГО ПРОКСИ ---
+  // Вам нужно заменить 'YOUR_USERNAME' и 'YOUR_PASSWORD'
+  const externalProxyUrl = `http://xggsmdrf:se2wmii8b1qh@185.39.8.196:5853`;
+  const agent = new HttpsProxyAgent(externalProxyUrl);
+  // ------------------------------------
 
-app.get('/browser', requireAuth, async (req, res) => {
-  const start = req.query.start;
-  if (!start || start.trim() === '') return res.status(400).send('Missing url');
-  let startProxyPath;
-  try {
-    const u = new URL(start);
-    startProxyPath = `/proxy/${u.protocol.slice(0, -1)}/${u.host}${u.pathname}${u.search}`;
-  } catch {
-    const searchQuery = encodeURIComponent(start.trim());
-    startProxyPath = `/proxy/https/duckduckgo.com/?q=${searchQuery}`;
-  }
-  res.render('browser', { startProxyPath, startUrl: start });
-});
+  const hist = new History({
+    userId: req.session.userId,
+    url: decoded,
+    method: 'GET',
+  });
+  hist.save().then(() => (req.historyId = hist._id));
 
-// --- Helper для переписывания HTML
-function rewriteHtml(html, baseUrl, req) {
-  const $ = cheerio.load(html);
-  const base = new URL(baseUrl);
-
-  const createProxiedUrl = (originalUrl) => {
-    try {
-      if (originalUrl.startsWith('data:')) return originalUrl;
-      const absoluteUrl = new URL(originalUrl, base);
-      let proxied = `/proxy/${absoluteUrl.protocol.slice(0, -1)}/${absoluteUrl.host}${absoluteUrl.pathname}`;
-      if (absoluteUrl.search) proxied += `?${absoluteUrl.search.slice(1)}`;
-      return `${req.protocol}://${req.headers.host}${proxied}`;
-    } catch {
-      return originalUrl;
-    }
-  };
-
-  $('[src], [href], [action]').each(function() {
-    const el = $(this);
-    const originalUrl = el.attr('src') || el.attr('href') || el.attr('action');
-    if (originalUrl) {
-      const proxiedUrl = createProxiedUrl(originalUrl);
-      if (el.is('[href]')) el.attr('href', proxiedUrl);
-      else if (el.is('[src]')) el.attr('src', proxiedUrl);
-      else if (el.is('[action]')) el.attr('action', proxiedUrl);
-    }
+  const proxyMiddleware = createProxyMiddleware({
+    target: decoded,
+    changeOrigin: true,
+    secure: false,
+    agent: agent, // <-- Добавлена опция для прокси‑чейна
+    onProxyReq: (proxyReq) => {
+      if (req.session.cookies) {
+        proxyReq.setHeader('Cookie', req.session.cookies.join('; '));
+      }
+    },
+    onProxyRes: async (_, _proxyRes, res) => {
+      const setCookies = _proxyRes.headers['set-cookie'];
+      if (setCookies) req.session.cookies = setCookies;
+      await History.updateOne(
+        { _id: req.historyId },
+        { status: _proxyRes.statusCode }
+      );
+    },
   });
 
-  $('style').each(function() {
-    let css = $(this).html();
-    css = css.replace(/url\(['"]?(.*?)['"]?\)/g, (match, p1) => `url('${createProxiedUrl(p1)}')`);
-    $(this).html(css);
-  });
-
-  return $.html();
-}
-
-// --- Proxy endpoint
-app.all('/proxy/:protocol/:host/*', requireAuth, async (req, res) => {
-  const { protocol, host } = req.params;
-  const reqPath = req.params[0] ? '/' + req.params[0] : '/';
-  let target;
-  try {
-    target = new URL(`${protocol}://${host}${reqPath}`);
-    const searchParams = new URLSearchParams(target.search);
-    for (const [key, value] of Object.entries(req.query)) searchParams.append(key, value);
-    target.search = searchParams.toString();
-  } catch {
-    return res.status(400).send('Bad URL');
-  }
-
-  const setting = await db.get('SELECT selected_proxy_id FROM settings WHERE user_id = ?', req.session.user.id);
-  let agent = null;
-
-  if (setting?.selected_proxy_id && setting.selected_proxy_id !== 'direct') {
-    const selectedProxy = PROXIES.find(p => p.id === setting.selected_proxy_id);
-    if (selectedProxy) {
-      const proxyUrl = `http://${selectedProxy.auth}@${selectedProxy.host}:${selectedProxy.port}`;
-      agent = new HttpsProxyAgent(proxyUrl);
-    }
-  }
-
-  const headers = { ...req.headers };
-  delete headers['host'];
-  delete headers['cookie'];
-  delete headers['accept-encoding'];
-  headers['referer'] = target.toString();
-
-  try {
-    const opts = { method: req.method, headers, redirect: 'manual', agent };
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      if (req.is('application/x-www-form-urlencoded')) opts.body = new URLSearchParams(req.body).toString();
-      else if (req.is('application/json')) opts.body = JSON.stringify(req.body);
-    }
-
-    const resp = await fetch(target, opts);
-
-    if (resp.status >= 300 && resp.status < 400 && resp.headers.get('location')) {
-      const locUrl = new URL(resp.headers.get('location'), target);
-      const proxied = `/proxy/${locUrl.protocol.slice(0, -1)}/${locUrl.host}${locUrl.pathname}${locUrl.search}`;
-      res.set('Location', `${req.protocol}://${req.headers.host}${proxied}`);
-      return res.status(resp.status).end();
-    }
-
-    const ct = resp.headers.get('content-type') || '';
-    res.status(resp.status);
-    if (ct.includes('text/html')) {
-      const text = await resp.text();
-      const rewritten = rewriteHtml(text, target.toString(), req);
-      res.set('content-type', 'text/html; charset=utf-8');
-      return res.send(rewritten);
-    }
-
-    const buf = Buffer.from(await resp.arrayBuffer());
-    if (ct) res.set('content-type', ct);
-    return res.send(buf);
-
-  } catch (e) {
-    console.error(e);
-    return res.status(502).send(`Proxy error: ${e.message}`);
-  }
+  proxyMiddleware(req, res, next);
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Web proxy listening on http://localhost:${port}`));
+// ---------- Healthcheck ----------
+app.get('/healthz', (_, res) => res.send('ok'));
+
+// ---------- Запуск ----------
+app.listen(PORT, () => {
+  console.log(`🚀 Web‑proxy running on http://localhost:${PORT}`);
+});
