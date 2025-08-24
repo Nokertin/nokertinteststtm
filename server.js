@@ -1,14 +1,10 @@
-// ─────────────────────────────────────────────
-// server.js 
-// ─────────────────────────────────────────────
-
 require('dotenv').config();
 
-const express      = require('express');
-const session      = require('express-session');
-const MongoStore   = require('connect-mongo');
+const express    = require('express');
+const session    = require('express-session');
+const MongoStore = require('connect-mongo');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const mongoose     = require('mongoose');
+const mongoose   = require('mongoose');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -42,7 +38,8 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true,
+      // `secure` должен быть **false** только при работе по HTTP
+      secure: process.env.NODE_ENV === 'production',   // <-- 1
       sameSite: 'lax',
     },
   })
@@ -50,6 +47,7 @@ app.use(
 
 // ---------- Middleware ----------
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json());               // <--- добавили
 app.set('view engine', 'ejs');
 app.set('views', __dirname + '/views');
 
@@ -61,11 +59,8 @@ const USERS = {
 
 // Middleware для проверки аутентификации
 function isAuthenticated(req, res, next) {
-  if (req.session.userId) {
-    next();
-  } else {
-    res.redirect('/login');
-  }
+  if (req.session.userId) return next();
+  res.redirect('/login');
 }
 
 // ---------- Routes ----------
@@ -78,7 +73,7 @@ app.get('/login', (req, res) =>
 app.post('/login', (req, res) => {
   const { user, pass } = req.body;
   if (USERS[user] && USERS[user] === pass) {
-    req.session.userId = user;
+    req.session.userId = user;          // сохраняем id
     return res.redirect('/proxy.html');
   }
   res.status(401).send('Invalid credentials.');
@@ -103,6 +98,7 @@ app.get('/history', async (req, res) => {
 app.use('/proxy/:encodedUrl*', (req, res, next) => {
   const decoded = decodeURIComponent(req.params.encodedUrl);
 
+  // Сохраняем запрос в истории
   const hist = new History({
     userId: req.session.userId,
     url: decoded,
@@ -113,7 +109,7 @@ app.use('/proxy/:encodedUrl*', (req, res, next) => {
   const proxyMiddleware = createProxyMiddleware({
     target: decoded,
     changeOrigin: true,
-    secure: false,
+    secure: false,          // можно оставить false – для dev
     onProxyReq: (proxyReq) => {
       if (req.session.cookies) {
         proxyReq.setHeader('Cookie', req.session.cookies.join('; '));
