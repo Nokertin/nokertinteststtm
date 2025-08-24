@@ -17,6 +17,11 @@
     "http-proxy-middleware": "^3.0.1",
     "https-proxy-agent": "^7.0.6",
     "mongoose": "^8.0.4",
-    "redis": "^4.6.7"
+    "node-fetch": "^2.6.7",
+    "redis": "^4.6.7",
+    "bcryptjs": "^2.4.3",
+    "sqlite3": "^5.1.7",
+    "sqlite": "^5.1.1",
+    "cheerio": "^1.0.0-rc.12"
   }
 }
