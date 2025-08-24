@@ -1,40 +1,53 @@
-// server.js
-require('dotenv').config();
-const express = require('express');
-const session = require('express-session');
-const MongoStore = require('connect-mongo');
-const { createProxyMiddleware } = require('http-proxy-middleware');
-const basicAuth = require('basic-auth');
-const mongoose = require('mongoose');
+// ─────────────────────────────────────────────
+// server.js 
+// ─────────────────────────────────────────────
 
-const app = express();
+require('dotenv').config();          // загрузка .env (если используется локально)
+
+const express      = require('express');
+const session      = require('express-session');
+const MongoStore   = require('connect-mongo');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const basicAuth    = require('basic-auth');
+const mongoose     = require('mongoose');
+
+const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// ---------- MongoDB (History & Sessions) ----------
+// ---------- MongoDB ----------
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
-  useUnifiedTopology: true
+  useUnifiedTopology: true,
 });
 
+// Получаем клиент из Mongoose – один объект подключения
+const mongoClient = mongoose.connection.getClient();
+
+// Модель истории запросов (для /history)
 const HistorySchema = new mongoose.Schema({
-  userId: String,
-  url: String,
-  method: String,
-  status: Number,
-  timestamp: { type: Date, default: Date.now }
+  userId:    String,
+  url:       String,
+  method:    String,
+  status:    Number,
+  timestamp: { type: Date, default: Date.now },
 });
 const History = mongoose.model('History', HistorySchema);
 
+// ---------- Сессии ----------
 app.use(
   session({
     store: MongoStore.create({
-      mongoUrl: process.env.MONGO_URI,
+      client: mongoClient,          // передаём готовый клиент
       collectionName: 'sessions',
     }),
-    secret: 'very_secret_key', // можно вынести в env
+    secret: process.env.SESSION_SECRET || 'very_secret_key',
     resave: false,
     saveUninitialized: false,
-    cookie: { httpOnly: true, secure: true }
+    cookie: {
+      httpOnly: true,
+      // secure:true – только HTTPS. Если приложение под HTTP (например, локально), уберите
+      secure: false,
+    },
   })
 );
 
@@ -43,10 +56,10 @@ app.use(express.urlencoded({ extended: true }));
 app.set('view engine', 'ejs');
 app.set('views', __dirname + '/views');
 
-// ---------- Basic Auth (pre‑generated users) ----------
+// ---------- Basic Auth ----------
 const USERS = {
   alpha: 'alpha123',
-  beta:  'beta456'
+  beta : 'beta456',
 };
 
 function authMiddleware(req, res, next) {
@@ -61,13 +74,11 @@ function authMiddleware(req, res, next) {
 app.use(authMiddleware);
 
 // ---------- Routes ----------
-app.get('/', (req, res) => {
-  res.redirect('/proxy.html');
-});
+app.get('/', (req, res) => res.redirect('/proxy.html'));
 
-app.get('/login', (req, res) => {
-  res.sendFile(__dirname + '/views/login.html');
-});
+app.get('/login', (req, res) =>
+  res.sendFile(__dirname + '/views/login.html')
+);
 
 app.post('/login', (req, res) => {
   const { user, pass } = req.body;
@@ -78,9 +89,9 @@ app.post('/login', (req, res) => {
   res.status(401).send('Invalid credentials.');
 });
 
-app.get('/proxy.html', (req, res) => {
-  res.sendFile(__dirname + '/views/proxy.html');
-});
+app.get('/proxy.html', (req, res) =>
+  res.sendFile(__dirname + '/views/proxy.html')
+);
 
 // ---------- History API ----------
 app.get('/history', async (req, res) => {
@@ -93,34 +104,35 @@ app.get('/history', async (req, res) => {
 // ---------- Proxy endpoint ----------
 app.use('/proxy/:encodedUrl*', (req, res, next) => {
   const decoded = decodeURIComponent(req.params.encodedUrl);
-  
+
   // Сохраняем запись истории
   const hist = new History({
     userId: req.session.userId,
     url: decoded,
-    method: 'GET'
+    method: 'GET',
   });
   hist.save().then(() => (req.historyId = hist._id));
 
-  // Перенаправляем middleware прокси с нужным target
+  // Настраиваем прокси‑middleware
   const proxyMiddleware = createProxyMiddleware({
     target: decoded,
     changeOrigin: true,
-    secure: true,
+    secure: false,          // если целевой сервер сам не требует HTTPS
     onProxyReq: (proxyReq) => {
       if (req.session.cookies) {
         proxyReq.setHeader('Cookie', req.session.cookies.join('; '));
       }
     },
-    onProxyRes: async (proxyRes, _, res) => {
-      const setCookies = proxyRes.headers['set-cookie'];
+    onProxyRes: async (_, _proxyRes, res) => {
+      const setCookies = _proxyRes.headers['set-cookie'];
       if (setCookies) req.session.cookies = setCookies;
       await History.updateOne(
         { _id: req.historyId },
-        { status: proxyRes.statusCode }
+        { status: _proxyRes.statusCode }
       );
-    }
+    },
   });
+
   proxyMiddleware(req, res, next);
 });
 
