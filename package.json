@@ -1,4 +1,4 @@
-  },
+ {
   "dependencies": {
     "basic-auth": "^2.0.1",
     "connect-mongo": "^5.1.0",
@@ -8,9 +8,6 @@
     "express-session": "^1.17.3",
     "http-proxy-middleware": "^3.0.1",
     "mongoose": "^8.0.4",
-    "redis": "^4.6.7",
-    "express-session": "^1.17.3",
-    "connect-redis": "^7.1.1"
     "redis": "^4.6.7"
   }
 }
