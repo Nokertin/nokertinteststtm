@@ -9,6 +9,7 @@ const session      = require('express-session');
 const MongoStore   = require('connect-mongo');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const mongoose     = require('mongoose');
+const HttpsProxyAgent = require('https-proxy-agent'); // <-- Новая библиотека
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -42,8 +43,8 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true, // Изменено на true для Render (HTTPS)
-      sameSite: 'lax', // Рекомендуется для безопасности
+      secure: true,
+      sameSite: 'lax',
     },
   })
 );
@@ -53,7 +54,7 @@ app.use(express.urlencoded({ extended: true }));
 app.set('view engine', 'ejs');
 app.set('views', __dirname + '/views');
 
-// ---------- Basic Auth (удалено, используется только форма входа) ----------
+// ---------- Auth users (хранятся в коде) ----------
 const USERS = {
   alpha: 'alpha123',
   beta : 'beta456',
@@ -69,8 +70,6 @@ function isAuthenticated(req, res, next) {
 }
 
 // ---------- Routes ----------
-
-// Перенаправление на страницу входа, если нет сессии
 app.get('/', (req, res) => res.redirect('/login'));
 
 app.get('/login', (req, res) =>
@@ -86,7 +85,6 @@ app.post('/login', (req, res) => {
   res.status(401).send('Invalid credentials.');
 });
 
-// Защищенные маршруты (требуют аутентификации)
 app.use(isAuthenticated);
 
 app.get('/proxy.html', (req, res) =>
@@ -104,6 +102,13 @@ app.get('/history', async (req, res) => {
 // ---------- Proxy endpoint ----------
 app.use('/proxy/:encodedUrl*', (req, res, next) => {
   const decoded = decodeURIComponent(req.params.encodedUrl);
+  
+  // --- КОНФИГУРАЦИЯ ВНЕШНЕГО ПРОКСИ ---
+  // Прокси: 185.39.8.196:5853
+  // ВАЖНО: замените 'YOUR_USERNAME' и 'YOUR_PASSWORD' на ваши реальные данные
+  const externalProxyUrl = `http://xggsmdrf:se2wmii8b1qh@185.39.8.196:5853`;
+  const agent = new HttpsProxyAgent(externalProxyUrl);
+  // ------------------------------------
 
   const hist = new History({
     userId: req.session.userId,
@@ -116,6 +121,7 @@ app.use('/proxy/:encodedUrl*', (req, res, next) => {
     target: decoded,
     changeOrigin: true,
     secure: false,
+    agent: agent, // <-- Указываем наш прокси-агент
     onProxyReq: (proxyReq) => {
       if (req.session.cookies) {
         proxyReq.setHeader('Cookie', req.session.cookies.join('; '));
