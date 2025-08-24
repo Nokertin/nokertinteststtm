@@ -1,26 +1,29 @@
 // ─────────────────────────────────────────────
-// server.js 
+// server.js  (обновлён с Cheerio)
 // ─────────────────────────────────────────────
 
+// ---------- Библиотеки ----------
 require('dotenv').config();
-
 const express      = require('express');
 const session      = require('express-session');
 const MongoStore   = require('connect-mongo');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const basicAuth    = require('basic-auth');
+const basicAuth    = require('basic-auth');          // (не используется, но оставим)
 const mongoose     = require('mongoose');
-const { HttpsProxyAgent } = require('https-proxy-agent'); // <-- Новая библиотека
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const fs           = require('fs');
+const path         = require('path');
+const cheerio      = require('cheerio');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// ---------- Инициализация ----------
+const app   = express();
+const PORT  = process.env.PORT || 3000;
 
 // ---------- MongoDB ----------
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 });
-
 const mongoClient = mongoose.connection.getClient();
 
 const HistorySchema = new mongoose.Schema({
@@ -44,7 +47,7 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: true,
+      secure: true,           // если вы разворачиваете под HTTPS
       sameSite: 'lax',
     },
   })
@@ -61,16 +64,13 @@ const USERS = {
   Boba: 'Boba1Biba',
 };
 
-// Middleware для проверки аутентификации
+// ---------- Проверка авторизации ----------
 function isAuthenticated(req, res, next) {
-  if (req.session.userId) {
-    next();
-  } else {
-    res.redirect('/login');
-  }
+  if (req.session.userId) return next();
+  res.redirect('/login');
 }
 
-// ---------- Routes ----------
+// ---------- Страницы ----------
 app.get('/', (req, res) => res.redirect('/login'));
 
 app.get('/login', (req, res) =>
@@ -88,27 +88,55 @@ app.post('/login', (req, res) => {
 
 app.use(isAuthenticated);
 
-app.get('/proxy.html', (req, res) =>
-  res.sendFile(__dirname + '/views/proxy.html')
-);
+// ------------------------------------------------------------------
+// 1️⃣ Перезаписываем proxy.html через Cheerio
+// ------------------------------------------------------------------
+app.get('/proxy.html', (req, res) => {
+  const filePath = path.join(__dirname, 'views/proxy.html');
+  let html = fs.readFileSync(filePath, 'utf8');
 
-// ---------- History API ----------
-app.get('/history', async (req, res) => {
-  const records = await History.find({ userId: req.session.userId })
-    .sort({ timestamp: -1 })
-    .limit(50);
-  res.json(records);
+  // Парсим с помощью Cheerio
+  const $ = cheerio.load(html);
+
+  function proxyEncode(url) {
+    return `/proxy/${encodeURIComponent(url)}`;
+  }
+
+  // Меняем все href/src/action, которые являются абсолютными URL‑ами
+  $('a[href], img[src], script[src], link[href], form[action]').each((i, el) => {
+    const tag = $(el).get(0).tagName.toLowerCase();
+    const attr = tag === 'form'
+      ? 'action'
+      : (tag === 'img' || tag === 'script')
+        ? 'src'
+        : 'href';
+
+    let url = $(el).attr(attr);
+    if (!url) return;
+
+    try {
+      // Создаём абсолютный URL относительно текущего хоста
+      const u = new URL(url, `${req.protocol}://${req.get('host')}`);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        $(el).attr(attr, proxyEncode(u.toString()));
+      }
+    } catch (_) {
+      // Не‑валидный URL – оставляем как есть
+    }
+  });
+
+  res.send($.html());
 });
 
-// ---------- Proxy endpoint ----------
+// ------------------------------------------------------------------
+// 2️⃣ Маршрут /proxy/:encodedUrl* (прокси)
+// ------------------------------------------------------------------
 app.use('/proxy/:encodedUrl*', (req, res, next) => {
   const decoded = decodeURIComponent(req.params.encodedUrl);
 
-  // --- КОНФИГУРАЦИЯ ВНЕШНЕГО ПРОКСИ ---
-  // Вам нужно заменить 'YOUR_USERNAME' и 'YOUR_PASSWORD'
+  // Конфигурация внешнего прокси
   const externalProxyUrl = `http://xggsmdrf:se2wmii8b1qh@185.39.8.196:5853`;
   const agent = new HttpsProxyAgent(externalProxyUrl);
-  // ------------------------------------
 
   const hist = new History({
     userId: req.session.userId,
@@ -121,8 +149,8 @@ app.use('/proxy/:encodedUrl*', (req, res, next) => {
     target: decoded,
     changeOrigin: true,
     secure: false,
-    agent: agent, // <-- Добавлена опция для прокси‑чейна
-    onProxyReq: (proxyReq) => {
+    agent,                                 // добавлено
+    onProxyReq: proxyReq => {
       if (req.session.cookies) {
         proxyReq.setHeader('Cookie', req.session.cookies.join('; '));
       }
@@ -140,10 +168,24 @@ app.use('/proxy/:encodedUrl*', (req, res, next) => {
   proxyMiddleware(req, res, next);
 });
 
-// ---------- Healthcheck ----------
+// ------------------------------------------------------------------
+// 3️⃣ История
+// ------------------------------------------------------------------
+app.get('/history', async (req, res) => {
+  const records = await History.find({ userId: req.session.userId })
+    .sort({ timestamp: -1 })
+    .limit(50);
+  res.json(records);
+});
+
+// ------------------------------------------------------------------
+// 4️⃣ Healthcheck
+// ------------------------------------------------------------------
 app.get('/healthz', (_, res) => res.send('ok'));
 
-// ---------- Запуск ----------
+// ------------------------------------------------------------------
+// Запуск сервера
+// ------------------------------------------------------------------
 app.listen(PORT, () => {
   console.log(`🚀 Web‑proxy running on http://localhost:${PORT}`);
 });
