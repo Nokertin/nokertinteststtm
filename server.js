@@ -2,8 +2,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const connectRedis = require('connect-redis');
-const redis = require('redis');
+const MongoStore = require('connect-mongo');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const basicAuth = require('basic-auth');
 const mongoose = require('mongoose');
@@ -11,11 +10,12 @@ const mongoose = require('mongoose');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ---------- MongoDB (History) ----------
+// ---------- MongoDB (History & Sessions) ----------
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 });
+
 const HistorySchema = new mongoose.Schema({
   userId: String,
   url: String,
@@ -25,15 +25,12 @@ const HistorySchema = new mongoose.Schema({
 });
 const History = mongoose.model('History', HistorySchema);
 
-// ---------- Redis (sessions) ----------
-const redisClient = redis.createClient({ url: process.env.REDIS_URL });
-redisClient.connect().catch(console.error);
-
-const RedisStore = connectRedis.default || connectRedis(session);
-
 app.use(
   session({
-    store: new RedisStore({ client: redisClient }),
+    store: MongoStore.create({
+      mongoUrl: process.env.MONGO_URI,
+      collectionName: 'sessions',
+    }),
     secret: 'very_secret_key', // можно вынести в env
     resave: false,
     saveUninitialized: false,
